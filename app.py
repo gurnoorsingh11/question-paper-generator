@@ -1,203 +1,606 @@
 import io
 import random
 import re
-from datetime import date
 
 import pandas as pd
 import streamlit as st
 from docx import Document
+from docx.shared import Inches, Pt
 
-st.set_page_config(page_title="SVIET Question Paper Generator", page_icon="📄", layout="centered")
+st.set_page_config(
+    page_title="SVIET Question Paper Generator",
+    page_icon="📄",
+    layout="centered",
+)
 
-MARK_OPTIONS = [2, 5, 10]
+st.title("SVIET Question Paper Generator")
+st.write(
+    "Upload a separate 2-mark question bank and a long-question bank "
+    "for Sections B/C. Select random questions, shuffle sections, "
+    "and download a printable Word paper."
+)
 
 
-def clean_question(text):
-    text = str(text).strip()
-    text = re.sub(r"^\s*(?:Q(?:uestion)?\s*)?\d+\s*[.)、:-]\s*", "", text, flags=re.I)
-    return re.sub(r"\s+", " ", text).strip()
+# ---------- QUESTION BANK READERS ----------
+
+def normalize(text):
+    return re.sub(r"\s+", " ", str(text)).strip()
 
 
-def parse_word(file):
-    doc = Document(file)
-    rows = []
+def looks_like_heading(text):
+    value = normalize(text).strip(" :-")
+    return bool(
+        not value
+        or re.match(
+            r"^(unit\s+[ivx\d]+|module\s+\d+|chapter\s+\d+|"
+            r"question\s*(bank|text)?|questions?|s\.?\s*no\.?|serial\s*no\.?)$",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def unique(items):
+    result = []
+    seen = set()
+
+    for item in items:
+        text = normalize(item)
+
+        if len(text) < 3 or looks_like_heading(text):
+            continue
+
+        if text.lower() in {
+            "question", "question text", "s.no", "s.no.", "serial no"
+        }:
+            continue
+
+        key = text.casefold()
+
+        if key not in seen:
+            seen.add(key)
+            result.append(text)
+
+    return result
+
+
+def read_docx(uploaded_file):
+    uploaded_file.seek(0)
+    doc = Document(uploaded_file)
+    items = []
+
     for paragraph in doc.paragraphs:
-        text = paragraph.text.strip()
-        if not text:
-            continue
-        if re.match(r"^(unit\s+[ivx\d]+|course\s*(?:name|code)?\s*:|subject\s*:|department\s*:|semester\s*:)", text, re.I):
-            continue
-        text = clean_question(text)
-        if len(text) >= 8:
-            rows.append({"Question": text, "Marks": None})
+        if paragraph.text.strip():
+            items.append(paragraph.text.strip())
+
     for table in doc.tables:
         for row in table.rows:
-            cells = [c.text.strip() for c in row.cells]
-            if not any(cells):
-                continue
-            question = next((c for c in cells if len(c) >= 8), "")
-            if question and question.lower() not in {"question", "questions", "question text"}:
-                rows.append({"Question": clean_question(question), "Marks": None})
-    return rows
+            cells = [
+                cell.text.strip()
+                for cell in row.cells
+                if cell.text.strip()
+            ]
+
+            if cells:
+                items.append(max(cells, key=len))
+
+    return unique(items)
 
 
-def parse_excel(file):
-    workbook = pd.ExcelFile(file)
-    rows = []
-    for sheet in workbook.sheet_names:
-        df = pd.read_excel(workbook, sheet_name=sheet, header=None).fillna("")
-        for _, row in df.iterrows():
-            cells = [str(value).strip() for value in row.tolist() if str(value).strip()]
-            if not cells:
-                continue
-            joined = " ".join(cells)
-            if re.match(r"^(unit\s+[ivx\d]+|question\s*(?:text)?|questions?)\s*$", joined, re.I):
-                continue
-            # Prefer a cell that looks like a full question; otherwise combine the row.
-            question = max(cells, key=len)
-            if len(question) >= 8:
-                rows.append({"Question": clean_question(question), "Marks": None})
-    return rows
+def read_excel(uploaded_file):
+    uploaded_file.seek(0)
+    workbook = pd.ExcelFile(uploaded_file)
+    items = []
+
+    for sheet_name in workbook.sheet_names:
+        frame = pd.read_excel(
+            workbook,
+            sheet_name=sheet_name,
+            header=None,
+        ).fillna("")
+
+        for _, row in frame.iterrows():
+            cells = [
+                normalize(value)
+                for value in row.tolist()
+                if normalize(value)
+            ]
+
+            if cells:
+                items.append(max(cells, key=len))
+
+    return unique(items)
 
 
-def make_docx(meta, paper):
+def read_bank(uploaded_file):
+    name = uploaded_file.name.lower()
+
+    if name.endswith(".docx"):
+        return read_docx(uploaded_file)
+
+    if name.endswith((".xlsx", ".xls")):
+        return read_excel(uploaded_file)
+
+    raise ValueError(
+        "Upload a Word (.docx) or Excel (.xlsx/.xls) file."
+    )
+
+
+# ---------- WORD PAPER CREATION ----------
+
+def create_default_template(meta):
     doc = Document()
     section = doc.sections[0]
-    section.top_margin = section.bottom_margin = __import__("docx").shared.Inches(0.7)
+
+    section.top_margin = Inches(0.65)
+    section.bottom_margin = Inches(0.65)
+    section.left_margin = Inches(0.75)
+    section.right_margin = Inches(0.75)
+
     p = doc.add_paragraph()
     p.alignment = 1
     run = p.add_run(meta["college"])
     run.bold = True
-    run.font.size = __import__("docx").shared.Pt(15)
+    run.font.size = Pt(15)
+
     p = doc.add_paragraph()
     p.alignment = 1
     run = p.add_run("QUESTION PAPER")
     run.bold = True
-    run.font.size = __import__("docx").shared.Pt(13)
-    doc.add_paragraph(f"Department: {meta['department']}\tSemester: {meta['semester']}")
-    doc.add_paragraph(f"Subject: {meta['subject']} ({meta['subject_code']})")
-    doc.add_paragraph(f"M. Code: {meta['m_code']}\tDuration: {meta['duration']}\tMaximum Marks: {meta['total_marks']}")
-    doc.add_paragraph("Instructions: Attempt the questions as directed by the examiner.")
-    current_marks = None
-    number = 0
-    for item in paper:
-        if item["Marks"] != current_marks:
-            current_marks = item["Marks"]
-            doc.add_paragraph(f"Section — {current_marks} Marks", style="Heading 2")
+    run.font.size = Pt(13)
+
+    doc.add_paragraph(
+        f"Department: {meta['department']}     "
+        f"Semester: {meta['semester']}"
+    )
+
+    doc.add_paragraph(
+        f"Subject: {meta['subject']}     "
+        f"Subject Code: {meta['subject_code']}"
+    )
+
+    doc.add_paragraph(
+        f"Exam Duration: {meta['duration']}     "
+        f"Maximum Marks: {meta['maximum_marks']}"
+    )
+
+    if meta["m_code"]:
+        doc.add_paragraph(f"M. Code: {meta['m_code']}")
+
+    doc.add_paragraph(
+        "Instructions: Attempt questions as directed."
+    )
+    doc.add_paragraph("")
+
+    return doc
+
+
+def append_section(doc, title, questions, start_number, marks_label=None):
+    if not questions:
+        return start_number
+
+    heading = doc.add_paragraph()
+    heading.style = "Heading 2"
+    heading.add_run(title)
+
+    number = start_number
+
+    for question in questions:
+        label = f"{number}. {question}"
+
+        if marks_label:
+            label += f" ({marks_label})"
+
+        doc.add_paragraph(label)
         number += 1
-        doc.add_paragraph(f"{number}. {item['Question']} ({item['Marks']} marks)")
+
+    return number
+
+
+def build_docx(
+    meta,
+    section_a,
+    section_b,
+    section_c,
+    template_bytes=None,
+):
+    if template_bytes:
+        doc = Document(io.BytesIO(template_bytes))
+        doc.add_page_break()
+    else:
+        doc = create_default_template(meta)
+
+    next_number = 1
+
+    next_number = append_section(
+        doc,
+        "SECTION A — SHORT QUESTIONS",
+        section_a,
+        next_number,
+        "2 marks each",
+    )
+
+    next_number = append_section(
+        doc,
+        "SECTION B — LONG QUESTIONS",
+        section_b,
+        next_number,
+    )
+
+    append_section(
+        doc,
+        "SECTION C — LONG QUESTIONS",
+        section_c,
+        next_number,
+    )
+
     output = io.BytesIO()
     doc.save(output)
-    output.seek(0)
+
     return output.getvalue()
 
 
-st.title("SVIET Question Paper Generator")
-st.caption("Upload questions → assign marks → generate → preview → download Word")
+# ---------- EXAM DETAILS ----------
 
-with st.expander("1. Paper details", expanded=True):
-    c1, c2 = st.columns(2)
-    with c1:
-        college = st.text_input("College name", "Swami Vivekanand Institute of Engineering and Technology")
-        department = st.text_input("Department", "Computer Science & Engineering")
+with st.expander("1. Exam details", expanded=True):
+    col1, col2 = st.columns(2)
+
+    with col1:
+        college = st.text_input(
+            "College / institute",
+            "Swami Vivekanand Institute of Engineering and Technology",
+        )
+
+        department = st.text_input(
+            "Department",
+            "Computer Science & Engineering",
+        )
+
         subject = st.text_input("Subject name")
         subject_code = st.text_input("Subject code")
-    with c2:
+
+    with col2:
         semester = st.text_input("Semester")
-        m_code = st.text_input("M. Code")
+        m_code = st.text_input("M. Code (optional)")
         duration = st.text_input("Exam duration", "3 Hours")
-        total_marks = st.number_input("Maximum marks", min_value=1, max_value=300, value=70, step=1)
 
-st.subheader("2. Upload question bank")
-upload = st.file_uploader("Choose a Word (.docx) or Excel (.xlsx/.xls) file", type=["docx", "xlsx", "xls"])
-if upload:
-    try:
-        if upload.name.lower().endswith(".docx"):
-            imported = parse_word(upload)
-        else:
-            imported = parse_excel(upload)
-        # Remove exact duplicates while preserving order.
-        seen, unique = set(), []
-        for row in imported:
-            key = row["Question"].casefold()
-            if key and key not in seen:
-                seen.add(key)
-                unique.append(row)
-        st.session_state["questions"] = unique
-        st.session_state["source_name"] = upload.name
-        st.success(f"Imported {len(unique)} possible questions from {upload.name}. Please review them below.")
-    except Exception as exc:
-        st.error(f"Couldn't read this file: {exc}")
+        maximum_marks = st.number_input(
+            "Maximum marks",
+            min_value=1,
+            max_value=300,
+            value=70,
+            step=1,
+        )
 
-if "questions" in st.session_state and st.session_state["questions"]:
-    st.subheader("3. Review questions and assign marks")
-    st.caption("Choose 2, 5, or 10 marks for every question you want the app to use. Leave unused questions unassigned.")
-    df = pd.DataFrame(st.session_state["questions"])
-    if "Marks" not in df.columns:
-        df["Marks"] = None
-    edited = st.data_editor(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        num_rows="dynamic",
-        column_config={
-            "Question": st.column_config.TextColumn("Question", required=True, width="large"),
-            "Marks": st.column_config.SelectboxColumn("Marks", options=MARK_OPTIONS, required=False),
-        },
-        key="question_editor",
-    )
-    st.session_state["edited_questions"] = edited
-    ready = edited.dropna(subset=["Marks"]).copy()
-    ready["Marks"] = ready["Marks"].astype(int)
-    st.write(f"Classified questions ready to use: **{len(ready)}**")
-    counts = {mark: int((ready["Marks"] == mark).sum()) for mark in MARK_OPTIONS}
 
-    st.subheader("4. Choose how many questions to include")
-    a, b, c = st.columns(3)
-    with a:
-        n2 = st.number_input(f"2-mark questions (available: {counts[2]})", min_value=0, max_value=counts[2], value=min(5, counts[2]), step=1)
-    with b:
-        n5 = st.number_input(f"5-mark questions (available: {counts[5]})", min_value=0, max_value=counts[5], value=min(4, counts[5]), step=1)
-    with c:
-        n10 = st.number_input(f"10-mark questions (available: {counts[10]})", min_value=0, max_value=counts[10], value=min(3, counts[10]), step=1)
-    calculated_total = int(n2) * 2 + int(n5) * 5 + int(n10) * 10
-    st.write(f"Marks from selected questions: **{calculated_total}**")
-    if calculated_total != int(total_marks):
-        st.warning(f"The selected questions add up to {calculated_total} marks, but Maximum marks is {int(total_marks)}. Adjust either the question counts or Maximum marks.")
+# ---------- TEMPLATE UPLOAD ----------
 
-    if st.button("Generate / Shuffle Paper", type="primary", use_container_width=True):
-        if not subject.strip():
-            st.error("Enter the subject name first.")
-        elif calculated_total != int(total_marks):
-            st.error("The question marks must equal Maximum marks before generating the paper.")
-        else:
-            paper = []
-            for mark, count in [(2, int(n2)), (5, int(n5)), (10, int(n10))]:
-                pool = ready[ready["Marks"] == mark]["Question"].astype(str).tolist()
-                paper.extend({"Question": q, "Marks": mark} for q in random.sample(pool, count))
-            random.shuffle(paper)
-            st.session_state["generated_paper"] = paper
-            st.session_state["generated_meta"] = {
-                "college": college, "department": department, "subject": subject,
-                "subject_code": subject_code, "semester": semester, "m_code": m_code,
-                "duration": duration, "total_marks": int(total_marks),
-            }
+st.subheader("2. Upload exam layout template (optional)")
 
-if "generated_paper" in st.session_state:
-    st.subheader("5. Preview")
-    meta = st.session_state["generated_meta"]
-    st.markdown(f"**{meta['subject']} ({meta['subject_code']})**  \nDepartment: {meta['department']} | Semester: {meta['semester']}  \nDuration: {meta['duration']} | Maximum marks: {meta['total_marks']}")
-    for i, question in enumerate(st.session_state["generated_paper"], start=1):
-        st.write(f"**{i}.** {question['Question']}  *({question['Marks']} marks)*")
-    docx_bytes = make_docx(meta, st.session_state["generated_paper"])
-    st.download_button(
-        "Download Word Paper (.docx)", data=docx_bytes,
-        file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', meta['subject']).strip('_') or 'Question_Paper'}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        use_container_width=True,
-    )
+template_upload = st.file_uploader(
+    "Word template (.docx)",
+    type=["docx"],
+    key="layout_template",
+    help=(
+        "Upload your desired exam layout. Existing content is preserved; "
+        "generated questions are added after a page break."
+    ),
+)
+
+if template_upload is not None:
+    st.success(f"Template selected: {template_upload.name}")
+    template_bytes = template_upload.getvalue()
 else:
-    st.info("Your generated paper will appear here after you classify questions and click Generate / Shuffle Paper.")
+    template_bytes = None
+
+
+# ---------- TWO QUESTION BANKS ----------
+
+st.subheader("3. Upload question banks")
+
+col_a, col_b = st.columns(2)
+
+with col_a:
+    short_upload = st.file_uploader(
+        "Section A — 2-mark questions",
+        type=["docx", "xlsx", "xls"],
+        key="short_bank",
+        help="Upload a separate file containing short-answer questions.",
+    )
+
+with col_b:
+    long_upload = st.file_uploader(
+        "Sections B/C — long questions",
+        type=["docx", "xlsx", "xls"],
+        key="long_bank",
+        help="Upload a separate file containing long-answer questions.",
+    )
+
+
+def load_if_changed(upload, state_key, display_name):
+    if upload is None:
+        st.session_state.pop(state_key, None)
+        st.session_state.pop(state_key + "_fingerprint", None)
+        return []
+
+    fingerprint = f"{upload.name}:{upload.size}"
+
+    if st.session_state.get(state_key + "_fingerprint") != fingerprint:
+        try:
+            st.session_state[state_key] = read_bank(upload)
+            st.session_state[state_key + "_fingerprint"] = fingerprint
+            st.session_state.pop("selected_paper", None)
+
+        except Exception as exc:
+            st.error(f"Couldn't read {display_name}: {exc}")
+            return []
+
+    return st.session_state.get(state_key, [])
+
+
+short_questions = load_if_changed(
+    short_upload,
+    "short_questions",
+    "the 2-mark bank",
+)
+
+long_questions = load_if_changed(
+    long_upload,
+    "long_questions",
+    "the long-question bank",
+)
+
+if short_upload is not None:
+    st.caption(
+        f"Section A bank: {len(short_questions)} questions loaded."
+    )
+
+if long_upload is not None:
+    st.caption(
+        f"Long-question bank: {len(long_questions)} questions loaded."
+    )
+
+
+# ---------- QUESTION COUNTS ----------
+
+st.subheader("4. Choose how many questions to print")
+
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    count_a = st.number_input(
+        "Section A (2 marks each)",
+        min_value=0,
+        max_value=200,
+        value=10,
+        step=1,
+    )
+
+with c2:
+    count_b = st.number_input(
+        "Section B long questions",
+        min_value=0,
+        max_value=200,
+        value=5,
+        step=1,
+    )
+
+with c3:
+    count_c = st.number_input(
+        "Section C long questions",
+        min_value=0,
+        max_value=200,
+        value=3,
+        step=1,
+    )
+
+st.caption(
+    "No 2-, 5-, or 10-mark availability checks are performed. "
+    "Questions are selected from the two uploaded banks. If you request "
+    "more questions than a bank contains, all available questions from "
+    "that bank will be used."
+)
+
+if int(count_a) > len(short_questions):
+    st.info(
+        f"Section A requests {int(count_a)} questions, but the bank "
+        f"contains {len(short_questions)}. All available short questions "
+        "will be used."
+    )
+
+if int(count_b) + int(count_c) > len(long_questions):
+    st.info(
+        f"Sections B and C request {int(count_b) + int(count_c)} long "
+        f"questions, but the bank contains {len(long_questions)}. "
+        "Available questions will be used without duplicates between B and C."
+    )
+
+
+# ---------- RANDOM SELECTION ----------
+
+def choose_paper():
+    selected_a = random.sample(
+        short_questions,
+        min(int(count_a), len(short_questions)),
+    )
+
+    available_long = long_questions.copy()
+    random.shuffle(available_long)
+
+    b_count = min(int(count_b), len(available_long))
+    selected_b = available_long[:b_count]
+
+    remaining_long = available_long[b_count:]
+
+    c_count = min(int(count_c), len(remaining_long))
+    selected_c = remaining_long[:c_count]
+
+    st.session_state["selected_paper"] = {
+        "A": selected_a,
+        "B": selected_b,
+        "C": selected_c,
+    }
+
+
+action1, action2 = st.columns(2)
+
+with action1:
+    if st.button(
+        "🎲 Generate Random Paper",
+        type="primary",
+        use_container_width=True,
+    ):
+        if not short_questions and not long_questions:
+            st.error("Upload at least one question bank first.")
+        else:
+            choose_paper()
+            st.rerun()
+
+with action2:
+    if st.button(
+        "🔀 Shuffle All Sections",
+        use_container_width=True,
+    ):
+        if not short_questions and not long_questions:
+            st.error("Upload at least one question bank first.")
+        else:
+            choose_paper()
+            st.rerun()
+
+
+# ---------- PREVIEW AND SECTION SHUFFLE ----------
+
+selected = st.session_state.get("selected_paper")
+
+if selected is not None:
+    st.subheader("5. Preview exam paper")
+
+    st.markdown(
+        f"**{subject or 'Subject'}**  \n"
+        f"Code: {subject_code or '—'} | "
+        f"Semester: {semester or '—'}  \n"
+        f"Duration: {duration} | "
+        f"Maximum marks: {maximum_marks}"
+    )
+
+    if m_code.strip():
+        st.caption(f"M. Code: {m_code}")
+
+    section_specs = [
+        (
+            "A",
+            "SECTION A — SHORT QUESTIONS (2 MARKS EACH)",
+            int(count_a),
+        ),
+        (
+            "B",
+            "SECTION B — LONG QUESTIONS",
+            int(count_b),
+        ),
+        (
+            "C",
+            "SECTION C — LONG QUESTIONS",
+            int(count_c),
+        ),
+    ]
+
+    for section_key, heading, requested in section_specs:
+        questions = selected.get(section_key, [])
+
+        heading_col, shuffle_col = st.columns([4, 1])
+
+        with heading_col:
+            st.markdown(f"### {heading}")
+
+        with shuffle_col:
+            if st.button(
+                "Shuffle",
+                key=f"shuffle_{section_key}",
+                use_container_width=True,
+            ):
+                if section_key == "A":
+                    selected["A"] = random.sample(
+                        short_questions,
+                        min(int(count_a), len(short_questions)),
+                    )
+
+                else:
+                    other_key = "C" if section_key == "B" else "B"
+                    reserved = set(selected.get(other_key, []))
+
+                    pool = [
+                        question
+                        for question in long_questions
+                        if question not in reserved
+                    ]
+
+                    selected[section_key] = random.sample(
+                        pool,
+                        min(requested, len(pool)),
+                    )
+
+                st.session_state["selected_paper"] = selected
+                st.rerun()
+
+        if not questions:
+            st.caption("No questions selected for this section.")
+
+        else:
+            for number, question in enumerate(questions, start=1):
+                st.write(f"**{number}.** {question}")
+
+    meta = {
+        "college": college,
+        "department": department,
+        "subject": subject,
+        "subject_code": subject_code,
+        "semester": semester,
+        "duration": duration,
+        "maximum_marks": int(maximum_marks),
+        "m_code": m_code,
+    }
+
+    try:
+        docx_data = build_docx(
+            meta,
+            selected.get("A", []),
+            selected.get("B", []),
+            selected.get("C", []),
+            template_bytes=template_bytes,
+        )
+
+        filename_subject = re.sub(
+            r"[^A-Za-z0-9_-]+",
+            "_",
+            subject,
+        ).strip("_")
+
+        if not filename_subject:
+            filename_subject = "SVIET_Exam"
+
+        st.download_button(
+            "⬇️ Download Word Exam Paper",
+            data=docx_data,
+            file_name=f"{filename_subject}_Question_Paper.docx",
+            mime=(
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+            use_container_width=True,
+        )
+
+        st.caption(
+            "Open the downloaded Word document and choose Print."
+        )
+
+    except Exception as exc:
+        st.error(f"Could not create the Word paper: {exc}")
+
 
 st.divider()
-st.caption("Simple version: no account, database, templates, or automatic marks classification. Uploaded questions are reviewed manually before use.")
+
+st.caption(
+    "Simple workflow: one 2-mark bank for Section A, one long-question "
+    "bank for Sections B/C, optional Word layout template, random selection, "
+    "shuffle, preview, and Word download."
+)
