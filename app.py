@@ -161,11 +161,29 @@ def build_docx(meta, section_a, section_b, section_c, marks_b, marks_c, attempt_
     if meta["m_code"].strip():
         add_paragraph(doc, f"M. Code: {meta['m_code']}", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
     add_paragraph(doc, f"Date of Examination: {meta['exam_date']}", size=10, align=WD_ALIGN_PARAGRAPH.CENTER)
-    add_paragraph(
-        doc,
-        f"Time: {meta['duration']}\t\t\t\t\t\tMax. Marks: {meta['maximum_marks']}",
-        size=10,
-    )
+    time_table = doc.add_table(rows=1, cols=2)
+    time_table.autofit = False
+    time_table.columns[0].width = Inches(3.5)
+    time_table.columns[1].width = Inches(3.5)
+
+    left_cell = time_table.cell(0, 0)
+    right_cell = time_table.cell(0, 1)
+
+    left_cell.width = Inches(3.5)
+    right_cell.width = Inches(3.5)
+
+    p_left = left_cell.paragraphs[0]
+    p_left.paragraph_format.space_after = Pt(0)
+    r_left = p_left.add_run(f"Time: {meta['duration']}")
+    r_left.font.name = "Times New Roman"
+    r_left.font.size = Pt(10)
+
+    p_right = right_cell.paragraphs[0]
+    p_right.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p_right.paragraph_format.space_after = Pt(0)
+    r_right = p_right.add_run(f"Max. Marks: {meta['maximum_marks']}")
+    r_right.font.name = "Times New Roman"
+    r_right.font.size = Pt(10)
 
     add_paragraph(doc, "INSTRUCTIONS TO CANDIDATES:", bold=True, size=10, space_after=2)
     add_paragraph(
@@ -213,8 +231,18 @@ def build_docx(meta, section_a, section_b, section_c, marks_b, marks_c, attempt_
         add_paragraph(doc, f"{q_number}. {question}  [{marks_c} marks]", size=10, space_after=8)
         q_number += 1
 
-    # UMC warning is deliberately the final line after all generated questions.
-    add_paragraph(doc, UMC_LINE, bold=True, size=8, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=0)
+   # UMC warning in the footer at the bottom of the page
+    footer = doc.sections[0].footer
+
+    p = footer.paragraphs[0]
+    p.clear()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(0)
+
+    run = p.add_run(UMC_LINE)
+    run.bold = True
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(8)
 
     output = io.BytesIO()
     doc.save(output)
