@@ -124,8 +124,36 @@ def build_docx(meta, section_a, section_b, section_c, marks_b, marks_c, attempt_
     normal.font.size = Pt(10)
 
     # Sample QP header and title block
-    add_paragraph(doc, "Roll No. __________________________________", size=10, space_after=0)
-    add_paragraph(doc, f"Total No. of Questions: {1 + len(section_b) + len(section_c):02d}", size=10)
+    header_table = doc.add_table(rows=1, cols=2)
+    header_table.autofit = False
+    header_table.columns[0].width = Inches(3.5)
+    header_table.columns[1].width = Inches(3.5)
+
+    left_cell = header_table.cell(0, 0)
+    right_cell = header_table.cell(0, 1)
+
+    left_cell.width = Inches(3.5)
+    right_cell.width = Inches(3.5)
+
+    p_left = left_cell.paragraphs[0]
+    p_left.paragraph_format.space_after = Pt(0)
+    r_left = p_left.add_run("Roll No. __________________________________")
+    r_left.font.name = "Times New Roman"
+    r_left.font.size = Pt(10)
+
+    p_right = right_cell.paragraphs[0]
+    p_right.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p_right.paragraph_format.space_after = Pt(0)
+    r_right = p_right.add_run("No. of Pages: 1")
+    r_right.font.name = "Times New Roman"
+    r_right.font.size = Pt(10)
+
+    add_paragraph(
+        doc,
+        f"Total No. of Questions: {1 + len(section_b) + len(section_c):02d}",
+        size=10,
+        space_after=0,
+    )
     add_paragraph(doc, meta["college"], bold=True, size=13, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=2)
     add_paragraph(doc, meta["degree_semester"], bold=True, size=11, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=2)
     add_paragraph(doc, meta["subject"], bold=True, size=11, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=2)
